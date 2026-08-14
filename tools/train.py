@@ -36,7 +36,8 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-Modal Grounding DINO Training')
     parser.add_argument('--config', type=str, default='groundingdino/config/GroundingDINO_SwinT_MultiModal.py',
                         help='Path to configuration file')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint for inference-only loading')
+    parser.add_argument('--resume', type=str, default=None, help='Path to latest_checkpoint.pth to resume training')
     parser.add_argument('--output_dir', type=str, default=None, help='Output directory')
     parser.add_argument('--local_rank', type=int, default=-1, help='Local rank for distributed training')
     parser.add_argument('--nnodes', type=int, default=1, help='Number of nodes')
@@ -66,15 +67,37 @@ def main():
     if args.output_dir is not None:
         cfg.OUTPUT_DIR = args.output_dir
     
-    cfg.DISTRIBUTED = args.distributed
+    cfg.DISTRIBUTED.ENABLED = args.distributed
     cfg.LOCAL_RANK = args.local_rank
     cfg.MASTER_ADDR = args.master_addr
     cfg.MASTER_PORT = args.master_port
 
     trainer = Trainer(cfg)
-    if args.checkpoint is not None:
-        trainer.load_checkpoint(args.checkpoint)
-    trainer.train()
+    
+    if args.resume is not None:
+        resume_path = args.resume
+        if not os.path.isabs(resume_path):
+            resume_path = os.path.join(project_root, resume_path)
+        if os.path.exists(resume_path):
+            print(f"Resuming training from: {resume_path}")
+            trainer.train(resume_from=resume_path)
+        else:
+            print(f"Warning: Resume checkpoint not found: {resume_path}")
+            print("Starting fresh training...")
+            trainer.train()
+    elif args.checkpoint is not None:
+        checkpoint_path = args.checkpoint
+        if not os.path.isabs(checkpoint_path):
+            checkpoint_path = os.path.join(project_root, checkpoint_path)
+        trainer.load_checkpoint(checkpoint_path, load_training_state=False)
+        trainer.train()
+    else:
+        latest_path = os.path.join(cfg.OUTPUT_DIR, 'latest_checkpoint.pth')
+        if os.path.exists(latest_path):
+            print(f"Found latest checkpoint, resuming from: {latest_path}")
+            trainer.train(resume_from=latest_path)
+        else:
+            trainer.train()
 
 
 if __name__ == '__main__':

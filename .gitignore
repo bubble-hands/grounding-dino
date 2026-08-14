@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -16,3 +16,16 @@ Train-001/
 .vscode/
 .idea/
 *.log
+
+# 数据集与结果 (不上传到 GitHub)
+初赛数据集-基于大模型的多模态视觉理解与推理/
+share_annot_ac72f1d926bb2d23/
+test_results/
+vis_results/
+baseline_results/
+
+# HuggingFace 缓存
+.cache/
+
+# 嵌套 git 仓库 (参考代码)
+grounding-dino/

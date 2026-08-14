@@ -1,4 +1,9 @@
 import argparse
+import os
+import sys
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 from groundingdino.config import get_cfg
 from groundingdino.engine import Trainer

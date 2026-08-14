@@ -1,6 +1,10 @@
+import os
 import json
 
-with open(r'E:\eee\Grounding DINO\data\train.json', 'r') as f:
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+train_json = os.path.join(project_root, 'data', 'train.json')
+
+with open(train_json, 'r') as f:
     data = json.load(f)
 
 print('最终语义描述示例：')

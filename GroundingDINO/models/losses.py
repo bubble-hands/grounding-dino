@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
-from .utils import sigmoid_focal_loss, generalized_box_iou
+from .utils import sigmoid_focal_loss, generalized_box_iou, box_cxcywh_to_xyxy
 
 
 class SetCriterion(nn.Module):
@@ -19,6 +19,9 @@ class SetCriterion(nn.Module):
         empty_weight[-1] = self.eos_coef
         self.register_buffer("empty_weight", empty_weight)
 
+        self.focal_alpha = 0.25
+        self.focal_gamma = 2.0
+
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"]
@@ -29,7 +32,17 @@ class SetCriterion(nn.Module):
         target_classes = torch.full(src_logits.shape[:2], self.num_classes, dtype=torch.int64, device=device)
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight.to(device))
+        target_onehot = torch.zeros_like(src_logits)
+        target_onehot.scatter_(2, target_classes.unsqueeze(-1), 1.0)
+
+        loss_ce = sigmoid_focal_loss(
+            src_logits,
+            target_onehot,
+            num_boxes,
+            alpha=self.focal_alpha,
+            gamma=self.focal_gamma,
+        )
+
         losses = {"loss_ce": loss_ce}
 
         if log:
@@ -43,12 +56,16 @@ class SetCriterion(nn.Module):
         device = src_boxes.device
         target_boxes = torch.cat([t["boxes"][i].to(device) for t, (_, i) in zip(targets, indices)], dim=0)
 
+        # L1 loss 在 cxcywh 空间计算（格式无关，逐元素比较）
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
 
         losses = {}
         losses["loss_bbox"] = loss_bbox.sum() / num_boxes
 
-        loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes, target_boxes))
+        # GIoU 必须在 xyxy 空间计算，否则面积/交集会出错
+        src_boxes_xyxy = box_cxcywh_to_xyxy(src_boxes)
+        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)
+        loss_giou = 1 - torch.diag(generalized_box_iou(src_boxes_xyxy, target_boxes_xyxy))
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses
 
@@ -91,18 +108,22 @@ class HungarianMatcher(nn.Module):
     def forward(self, outputs, targets):
         bs, num_queries = outputs["pred_logits"].shape[:2]
 
-        out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)
-        out_bbox = outputs["pred_boxes"].flatten(0, 1)
+        out_prob = outputs["pred_logits"].flatten(0, 1).sigmoid()
+        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # cxcywh
 
         device = out_bbox.device
         tgt_ids = torch.cat([v["labels"].to(device) for v in targets])
-        tgt_bbox = torch.cat([v["boxes"].to(device) for v in targets])
+        tgt_bbox = torch.cat([v["boxes"].to(device) for v in targets])  # cxcywh
 
         cost_class = -out_prob[:, tgt_ids]
 
+        # L1 cost 在 cxcywh 空间计算
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
 
-        cost_giou = -generalized_box_iou(out_bbox, tgt_bbox)
+        # GIoU cost 必须在 xyxy 空间计算
+        out_bbox_xyxy = box_cxcywh_to_xyxy(out_bbox)
+        tgt_bbox_xyxy = box_cxcywh_to_xyxy(tgt_bbox)
+        cost_giou = -generalized_box_iou(out_bbox_xyxy, tgt_bbox_xyxy)
 
         C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()

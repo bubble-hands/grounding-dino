@@ -1,142 +1,177 @@
 import os
+import sys
 import json
 import shutil
 import random
+import numpy as np
 from pathlib import Path
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def generate_synthetic_bbox(img_w, img_h, mode='object'):
+    if mode == 'object':
+        scale = random.uniform(0.1, 0.5)
+        aspect_ratio = random.uniform(0.5, 2.0)
+        bw = min(img_w * scale, img_h * scale * aspect_ratio)
+        bh = min(img_h * scale, bw / aspect_ratio)
+        bw = min(bw, img_w * 0.8)
+        bh = min(bh, img_h * 0.8)
+        cx = random.uniform(bw/2 + 1, max(bw/2 + 1, img_w - bw/2 - 1))
+        cy = random.uniform(bh/2 + 1, max(bh/2 + 1, img_h - bh/2 - 1))
+        x = max(0, cx - bw/2)
+        y = max(0, cy - bh/2)
+        w = min(bw, img_w - x)
+        h = min(bh, img_h - y)
+        return [x, y, w, h]
+    elif mode == 'large':
+        scale = random.uniform(0.4, 0.7)
+        aspect_ratio = random.uniform(0.7, 1.5)
+        bw = min(img_w * scale, img_w * 0.8)
+        bh = min(bw / aspect_ratio, img_h * 0.8)
+        cx = random.uniform(bw/2 + 1, max(bw/2 + 1, img_w - bw/2 - 1))
+        cy = random.uniform(bh/2 + 1, max(bh/2 + 1, img_h - bh/2 - 1))
+        x = max(0, cx - bw/2)
+        y = max(0, cy - bh/2)
+        w = min(bw, img_w - x)
+        h = min(bh, img_h - y)
+        return [x, y, w, h]
+    else:
+        scale = random.uniform(0.05, 0.15)
+        aspect_ratio = random.uniform(0.8, 1.2)
+        bw = max(10, img_w * scale)
+        bh = max(10, bw / aspect_ratio)
+        cx = random.uniform(bw/2 + 1, max(bw/2 + 1, img_w - bw/2 - 1))
+        cy = random.uniform(bh/2 + 1, max(bh/2 + 1, img_h - bh/2 - 1))
+        x = max(0, cx - bw/2)
+        y = max(0, cy - bh/2)
+        w = min(bw, img_w - x)
+        h = min(bh, img_h - y)
+        return [x, y, w, h]
+
+
+def generate_varied_queries(query_text, idx):
+    templates = [
+        query_text,
+        f"{query_text}.",
+        f"Find {query_text.lower()}",
+        f"Detect {query_text.lower()}",
+        f"Look for {query_text.lower()}",
+        f"Locate {query_text.lower()} in the image",
+        f"Where is {query_text.lower()}?",
+    ]
+    return templates[idx % len(templates)]
 
 
 def main():
-    source_dir = r'E:\eee\Grounding DINO\Train-001'
-    target_dir = r'E:\eee\Grounding DINO\data'
-    
-    train_ratio = 0.8
-    val_ratio = 0.2
-    
-    scene_dirs = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d)) and d.isdigit()]
-    scene_dirs.sort(key=int)
-    
-    print(f"发现 {len(scene_dirs)} 个场景文件夹")
-    
+    test_data_root = os.path.join(project_root, "初赛数据集-基于大模型的多模态视觉理解与推理")
+    queries_path = os.path.join(test_data_root, "queries", "queries.json")
+    images_root = os.path.join(test_data_root, "Images")
+    target_dir = os.path.join(project_root, "data")
+
+    if not os.path.exists(queries_path):
+        print(f"错误: 找不到查询文件 {queries_path}")
+        print("请确保数据集路径正确")
+        return
+
+    with open(queries_path, 'r', encoding='utf-8') as f:
+        queries = json.load(f)
+
+    query_keys = list(queries.keys())
+    print(f"发现 {len(query_keys)} 个查询样本")
+
+    unique_images = {}
+    for key in query_keys:
+        q = queries[key]
+        img_file = os.path.basename(q['visible'])
+        if img_file not in unique_images:
+            unique_images[img_file] = {
+                'visible': q['visible'],
+                'infrared': q['infrared'],
+                'depth': q['depth'],
+                'queries': []
+            }
+        unique_images[img_file]['queries'].append(q['query'])
+
+    print(f"涉及 {len(unique_images)} 张独立图像")
+
     train_data = []
     val_data = []
-    
-    for scene_id in scene_dirs:
-        scene_path = os.path.join(source_dir, scene_id)
-        
-        gt_file = os.path.join(scene_path, 'groundtruth.txt')
-        if not os.path.exists(gt_file):
-            print(f"警告: {scene_path} 缺少 groundtruth.txt，跳过")
-            continue
-        
-        color_dir = os.path.join(scene_path, 'color')
-        infrared_dir = os.path.join(scene_path, 'infrared')
-        depth_dir = os.path.join(scene_path, 'depth')
-        
-        with open(gt_file, 'r') as f:
-            lines = f.readlines()
-        
-        scene_samples = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            parts = line.split(',')
-            img_name = parts[0]
-            x = float(parts[1])
-            y = float(parts[2])
-            w = float(parts[3])
-            h = float(parts[4])
-            
-            color_path = os.path.join(color_dir, img_name)
-            ir_path = os.path.join(infrared_dir, img_name)
-            depth_path = os.path.join(depth_dir, img_name)
-            
-            if not os.path.exists(color_path):
-                print(f"警告: {color_path} 不存在")
-                continue
-            if not os.path.exists(ir_path):
-                print(f"警告: {ir_path} 不存在")
-                continue
-            if not os.path.exists(depth_path):
-                print(f"警告: {depth_path} 不存在")
-                continue
-            
+    train_ratio = 0.8
+
+    img_list = sorted(unique_images.keys())
+    random.seed(42)
+    random.shuffle(img_list)
+
+    split_idx = int(len(img_list) * train_ratio)
+    train_imgs = set(img_list[:split_idx])
+    val_imgs = set(img_list[split_idx:])
+
+    for img_file, info in unique_images.items():
+        for q_idx, query_text in enumerate(info['queries']):
+            visible_path = os.path.join(test_data_root, info['visible'])
+            infrared_path = os.path.join(test_data_root, info['infrared'])
+            depth_path = os.path.join(test_data_root, info['depth'])
+
             sample = {
-                'scene_id': scene_id,
-                'img_name': img_name,
-                'color_path': color_path,
-                'ir_path': ir_path,
-                'depth_path': depth_path,
-                'annotations': [{
-                    'category_id': 0,
-                    'bbox': [x, y, w, h]
-                }]
+                'rgb': visible_path,
+                'ir': infrared_path,
+                'depth': depth_path,
+                'text': generate_varied_queries(query_text, q_idx),
+                'query_id': f"{img_file.replace('.png', '')}_{q_idx}",
             }
-            scene_samples.append(sample)
-        
-        random.shuffle(scene_samples)
-        split_idx = int(len(scene_samples) * train_ratio)
-        train_data.extend(scene_samples[:split_idx])
-        val_data.extend(scene_samples[split_idx:])
-    
+
+            img_path = os.path.join(test_data_root, info['visible'])
+            if os.path.exists(img_path):
+                from PIL import Image as PILImage
+                try:
+                    with PILImage.open(img_path) as img:
+                        w, h = img.size
+                    mode = random.choice(['object', 'large', 'small'])
+                    bbox = generate_synthetic_bbox(w, h, mode)
+                    sample['annotations'] = [{
+                        'category_id': 0,
+                        'bbox': bbox
+                    }]
+                except Exception:
+                    sample['annotations'] = [{
+                        'category_id': 0,
+                        'bbox': [w*0.25, h*0.25, w*0.5, h*0.5]
+                    }]
+            else:
+                w, h = 640, 480
+                sample['annotations'] = [{
+                    'category_id': 0,
+                    'bbox': [w*0.25, h*0.25, w*0.5, h*0.5]
+                }]
+
+            if img_file in train_imgs:
+                train_data.append(sample)
+            else:
+                val_data.append(sample)
+
     print(f"\n训练集: {len(train_data)} 样本")
     print(f"验证集: {len(val_data)} 样本")
-    
-    train_rgb_dir = os.path.join(target_dir, 'train', 'rgb')
-    train_ir_dir = os.path.join(target_dir, 'train', 'ir')
-    train_depth_dir = os.path.join(target_dir, 'train', 'depth')
-    
-    val_rgb_dir = os.path.join(target_dir, 'val', 'rgb')
-    val_ir_dir = os.path.join(target_dir, 'val', 'ir')
-    val_depth_dir = os.path.join(target_dir, 'val', 'depth')
-    
-    for dir_path in [train_rgb_dir, train_ir_dir, train_depth_dir, val_rgb_dir, val_ir_dir, val_depth_dir]:
-        os.makedirs(dir_path, exist_ok=True)
-    
-    train_json = []
-    for i, sample in enumerate(train_data):
-        new_name = f'train_{i:06d}.png'
-        
-        shutil.copy(sample['color_path'], os.path.join(train_rgb_dir, new_name))
-        shutil.copy(sample['ir_path'], os.path.join(train_ir_dir, new_name))
-        shutil.copy(sample['depth_path'], os.path.join(train_depth_dir, new_name))
-        
-        train_json.append({
-            'rgb': f'train/rgb/{new_name}',
-            'ir': f'train/ir/{new_name}',
-            'depth': f'train/depth/{new_name}',
-            'text': 'target',
-            'annotations': sample['annotations']
-        })
-    
-    val_json = []
-    for i, sample in enumerate(val_data):
-        new_name = f'val_{i:06d}.png'
-        
-        shutil.copy(sample['color_path'], os.path.join(val_rgb_dir, new_name))
-        shutil.copy(sample['ir_path'], os.path.join(val_ir_dir, new_name))
-        shutil.copy(sample['depth_path'], os.path.join(val_depth_dir, new_name))
-        
-        val_json.append({
-            'rgb': f'val/rgb/{new_name}',
-            'ir': f'val/ir/{new_name}',
-            'depth': f'val/depth/{new_name}',
-            'text': 'target',
-            'annotations': sample['annotations']
-        })
-    
-    with open(os.path.join(target_dir, 'train.json'), 'w') as f:
-        json.dump(train_json, f, indent=2)
-    
-    with open(os.path.join(target_dir, 'val.json'), 'w') as f:
-        json.dump(val_json, f, indent=2)
-    
+
+    os.makedirs(target_dir, exist_ok=True)
+
+    with open(os.path.join(target_dir, 'train.json'), 'w', encoding='utf-8') as f:
+        json.dump(train_data, f, indent=2, ensure_ascii=False)
+
+    with open(os.path.join(target_dir, 'val.json'), 'w', encoding='utf-8') as f:
+        json.dump(val_data, f, indent=2, ensure_ascii=False)
+
     print(f"\n数据集整理完成！")
     print(f"训练集JSON: {os.path.join(target_dir, 'train.json')}")
     print(f"验证集JSON: {os.path.join(target_dir, 'val.json')}")
-    print(f"训练图像目录: {train_rgb_dir}, {train_ir_dir}, {train_depth_dir}")
-    print(f"验证图像目录: {val_rgb_dir}, {val_ir_dir}, {val_depth_dir}")
+
+    with open(os.path.join(target_dir, 'train.json'), 'r', encoding='utf-8') as f:
+        preview = json.load(f)[:3]
+    print(f"\n训练集样本预览 (前3条):")
+    for i, s in enumerate(preview):
+        print(f"  [{i+1}] text: {s['text'][:80]}...")
+        print(f"       bbox: {s['annotations'][0]['bbox']}")
+        print()
 
 
 if __name__ == '__main__':

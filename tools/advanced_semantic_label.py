@@ -268,7 +268,8 @@ def update_dataset_with_advanced_text(dataset_path, json_file):
 
 
 def main():
-    dataset_path = r'E:\eee\Grounding DINO\data'
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dataset_path = os.path.join(project_root, 'data')
     
     train_json = os.path.join(dataset_path, 'train.json')
     val_json = os.path.join(dataset_path, 'val.json')
